@@ -1,0 +1,14 @@
+{
+  "sample_type": "I16",
+  "sample_rate": 44100,
+  "duration": {
+    "secs": 2,
+    "nanos": 0
+  },
+  "kind": {
+    "Sawtooth": {
+      "freq": 110.0,
+      "amp": 0.8
+    }
+  }
+}
