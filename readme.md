@@ -3,7 +3,7 @@
 Educational MP3 decoder in Rust.
 
 #### MVP plan
-- [ ] MVP 0: Save raw bitstream to a WAV file.
+- [x] MVP 0: Save raw bitstream to a WAV file.
 - [ ] MVP 1: frame sync, header parser, bitrate/sample-rate tables, skip ID3v2, decode only MPEG-1 Layer III.
 - [ ] MVP 2: side info + bit reservoir + Huffman decode.
 - [ ] MVP 3: dequantize/requantize, scalefactors, reordering, stereo processing.
@@ -24,6 +24,10 @@ Lower sampling frequencies and bitrates, but the core decoding process is simila
 - [RFC 3003](https://www.rfc-editor.org/rfc/rfc3003.html)
 
 This RFC describes the MIME type for MP3 audio and provides some basic information about the format. It can be useful for understanding how MP3 files are structured and how they are typically used in web contexts.
+
+- [ID3v3 specification](https://id3.org/id3v2.3.0)
+
+The ID3v2 specification describes the metadata format commonly used in MP3 files. This can be useful for understanding how to skip over ID3v2 tags when parsing MP3 files.
   
 - [MPEG Layer-3 Bitstream Syntax and Decoding](https://mp3guessenc.sourceforge.io/MPEG%20Layer3%20Bitstream%20Syntax%20and%20Decoding.pdf)
 

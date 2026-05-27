@@ -167,6 +167,8 @@ fn save_test(out_dir: &str, params: &Params) -> Result<(), Box<dyn std::error::E
             "libmp3lame",
             "-q:a",
             "2",
+            "-metadata", "artist=gentests",
+            "-metadata", "album=generated",
             mp3_path.to_str().unwrap(),
         ])
         .output()?;

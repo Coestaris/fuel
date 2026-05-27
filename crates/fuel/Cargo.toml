@@ -4,3 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bitflags = "2.11.1"
+thiserror = "1.0.69"
+lazy_static = "1.4.0"
+log = "0.4.30"
