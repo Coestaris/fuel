@@ -1,6 +1,6 @@
 use crate::bite::Biter;
-use crate::mpeg::header::{MPEGHeader, MPEGVersion};
-use crate::mpeg::side_info::{
+use crate::header::{MPEGHeader, MPEGVersion};
+use crate::mpeg1::layer3::side_info::{
     MAX_CHANNELS, MAX_GRANULES, MAX_WINDOW, MPEGSideInfo, PerGranuleData,
 };
 use std::io::Read;
@@ -79,7 +79,7 @@ pub struct MPEGMainData {
 pub struct HuffmanCodeBits {}
 
 fn parse_huffman_code_bits<R: Read, const BUF_SIZE: usize>(
-    biter: &mut Biter<&mut R, BUF_SIZE>,
+    biter: &mut Biter<R, BUF_SIZE>,
 ) -> Result<HuffmanCodeBits, MpegParseMainDataError> {
     Ok(HuffmanCodeBits {})
 }
@@ -88,7 +88,7 @@ pub(crate) fn parse_main_data<R: Read, const BUF_SIZE: usize>(
     header: &MPEGHeader,
     side_info: &MPEGSideInfo,
     main_data_begin: usize,
-    biter: &mut Biter<&mut R, BUF_SIZE>,
+    biter: &mut Biter<R, BUF_SIZE>,
 ) -> Result<MPEGMainData, MpegParseMainDataError> {
     let mut scale_factor_l = ScaleFactorL::new();
     let mut scale_factor_s = ScaleFactorS::new();

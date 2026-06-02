@@ -1,7 +1,7 @@
 use crate::bite::Biter;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::io;
 use std::io::{Read, Seek};
 use log::debug;
@@ -34,11 +34,31 @@ pub enum MPEGVersion {
     MPEG25,
 }
 
+impl Display for MPEGVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MPEGVersion::MPEG1 => write!(f, "MPEG1"),
+            MPEGVersion::MPEG2 => write!(f, "MPEG2"),
+            MPEGVersion::MPEG25 => write!(f, "MPEG 25"),
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
 pub enum MPEGLayer {
     LayerI,
     LayerII,
     LayerIII,
+}
+
+impl Display for MPEGLayer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MPEGLayer::LayerI => write!(f, "LayerI"),
+            MPEGLayer::LayerII => write!(f, "LayerII"),
+            MPEGLayer::LayerIII => write!(f, "LayerIII"),
+        }
+    }
 }
 
 #[derive(Copy, Clone, Debug)]

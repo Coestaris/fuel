@@ -1,5 +1,5 @@
 use crate::bite::Biter;
-use crate::mpeg::header::{MPEGHeader, MPEGMode, MPEGVersion};
+use crate::header::{MPEGHeader, MPEGMode, MPEGVersion};
 use lazy_static::lazy_static;
 use log::debug;
 use std::io;
