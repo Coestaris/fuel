@@ -176,6 +176,13 @@ impl<R: Read, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {
     pub fn into_inner(self) -> R {
         self.stream
     }
+
+    #[inline(always)]
+    pub fn bits_read(&self) -> u64 {
+        let byte_bits = (self.byte_pos as u64) * 8;
+        let bit_bits = u64::from(self.bit_len);
+        byte_bits + bit_bits
+    }
 }
 
 impl<R: Read + Seek, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {

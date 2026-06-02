@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::io;
 use std::io::{Read, Seek};
+use log::debug;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -180,8 +181,8 @@ lazy_static! {
     };
 }
 
-#[rustfmt::skip]
-pub struct MPEGAudioFrameHeader {
+#[derive(Debug, Clone)]
+pub struct MPEGHeader {
     pub version: MPEGVersion,
     pub layer: MPEGLayer,
     pub bitrate: MPEGBitrate,
@@ -195,25 +196,11 @@ pub struct MPEGAudioFrameHeader {
     pub crc_word: Option<u16>,
 }
 
-impl Debug for MPEGAudioFrameHeader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AudioFrameHeader")
-            .field("version", &self.version)
-            .field("layer", &self.layer)
-            .field("bitrate", &self.bitrate)
-            .field("sampling_frequency", &self.sampling_frequency)
-            .field("padding_bit", &self.padding_bit)
-            .field("private_bit", &self.private_bit)
-            .field("mode", &self.mode)
-            .field("emphasis", &self.emphasis)
-            .field("crc_word", &self.crc_word)
-            .finish()
-    }
-}
-
 pub(crate) fn parse_header<R: Read, const BUF_SIZE: usize>(
     biter: &mut Biter<R, BUF_SIZE>,
-) -> Result<MPEGAudioFrameHeader, MpegParseHeaderError> {
+) -> Result<MPEGHeader, MpegParseHeaderError> {
+    debug!("Parsing MPEG frame header");
+
     /* Get bits from buffer */
     let syncword: u32 = biter.bslbf(11)?;
     let idex: u32 = biter.bslbf(1)?;
@@ -242,7 +229,7 @@ pub(crate) fn parse_header<R: Read, const BUF_SIZE: usize>(
 
     assert_eq!(biter.is_aligned::<16>(), true);
 
-    let header = MPEGAudioFrameHeader {
+    let header = MPEGHeader {
         version: *MPEG_VERSIONS
             .get(&(idex, id))
             .ok_or_else(|| MpegParseHeaderError::UnsupportedMPEGVersion(id, idex))?,
@@ -255,13 +242,17 @@ pub(crate) fn parse_header<R: Read, const BUF_SIZE: usize>(
         sampling_frequency: *SAMPLING_FREQUNCY_TABLE
             .get(&(idex, id, sampling_frequency))
             .ok_or_else(|| {
-                MpegParseHeaderError::UnsupportedSamplingFrequency(id, idex, sampling_frequency)
+                MpegParseHeaderError::UnsupportedSamplingFrequency(
+                    id,
+                    idex,
+                    sampling_frequency,
+                )
             })?,
         padding_bit,
         private_bit,
-        mode: *MODE_TALBE
-            .get(&(mode, mode_extension))
-            .ok_or_else(|| MpegParseHeaderError::UnsupportedMPEGVersion(mode, mode_extension))?,
+        mode: *MODE_TALBE.get(&(mode, mode_extension)).ok_or_else(|| {
+            MpegParseHeaderError::UnsupportedMPEGVersion(mode, mode_extension)
+        })?,
         is_original: original_copy,
         is_copyright: copyright,
         emphasis: *EMPHASIS_TABLE
