@@ -144,16 +144,10 @@ pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
 ) -> Result<(MPEGSideInfo, usize), MpegParseSideInfoError> {
     debug!("Parsing MPEG audio data");
 
-    let main_data_begin: u32 = match header.version {
-        MPEGVersion::MPEG1 => biter.uimsbf(9)?,
-        MPEGVersion::MPEG2 | MPEGVersion::MPEG25 => biter.uimsbf(8)?,
-    };
-    let private_bits: u32 = match (header.version, header.mode) {
-        (MPEGVersion::MPEG1, MPEGMode::SingleChannel) => biter.bslbf(5)?,
-        (MPEGVersion::MPEG1, _) => biter.bslbf(3)?,
-
-        (MPEGVersion::MPEG2 | MPEGVersion::MPEG25, MPEGMode::SingleChannel) => biter.bslbf(1)?,
-        (MPEGVersion::MPEG2 | MPEGVersion::MPEG25, _) => biter.bslbf(2)?,
+    let main_data_begin: u32 = biter.uimsbf(9)?;
+    let private_bits: u32 = match header.mode {
+        MPEGMode::SingleChannel => biter.bslbf(5)?,
+        _ => biter.bslbf(3)?,
     };
 
     // Number of channels. 1 for single_channel mode, 2 in other modes.
@@ -163,20 +157,14 @@ pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
     };
 
     let mut scfsi = SCFSI::new();
-    if matches!(header.version, MPEGVersion::MPEG1) {
-        for ch in 0..nch {
-            for scfsi_band in 0..MAX_SCFI_BANDS {
-                scfsi.set(ch, scfsi_band, biter.bslbf(1)?);
-            }
+    for ch in 0..nch {
+        for scfsi_band in 0..MAX_SCFI_BANDS {
+            scfsi.set(ch, scfsi_band, biter.bslbf(1)?);
         }
     }
 
     // Number of granules; equals 2 for MPEG1, 1 for MPEG2 and MPEG2.5.
-    let ngr = match header.version {
-        MPEGVersion::MPEG1 => 2,
-        MPEGVersion::MPEG2 | MPEGVersion::MPEG25 => 1,
-    };
-
+    let ngr = 2;
     let mut part2_3_length = PerGranuleData::<u32>::new();
     let mut big_values = PerGranuleData::<u32>::new();
     let mut global_gain = PerGranuleData::<u32>::new();
@@ -198,11 +186,7 @@ pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
             big_values.set(gr, ch, biter.uimsbf(9)?);
             global_gain.set(gr, ch, biter.uimsbf(8)?);
 
-            if matches!(header.version, MPEGVersion::MPEG1) {
-                scalefac_compress.set(gr, ch, biter.uimsbf(4)?);
-            } else {
-                scalefac_compress.set(gr, ch, biter.uimsbf(9)?);
-            }
+            scalefac_compress.set(gr, ch, biter.uimsbf(4)?);
 
             let wsf: u32 = biter.bslbf(1)?;
             window_switching_flag.set(gr, ch, wsf);
@@ -245,9 +229,7 @@ pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
                 region1_count.set(gr, ch, biter.uimsbf(3)?);
             }
 
-            if matches!(header.version, MPEGVersion::MPEG1) {
-                preflag.set(gr, ch, biter.uimsbf(1)?);
-            }
+            preflag.set(gr, ch, biter.uimsbf(1)?);
 
             scalefac_scale.set(gr, ch, biter.uimsbf(1)?);
             count1table_select.set(gr, ch, biter.uimsbf(1)?);

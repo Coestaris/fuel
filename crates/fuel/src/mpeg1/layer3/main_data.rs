@@ -100,60 +100,41 @@ pub(crate) fn parse_main_data<R: Read, const BUF_SIZE: usize>(
                 && (side_info.block_type.get(gr, ch) == 0b10)
             {
                 if side_info.mixed_block_flag.get(gr, ch) == 0b1 {
-                    if matches!(header.version, MPEGVersion::MPEG1) {
-                        for sfb in 0..8 {
-                            scale_factor_l.set(gr, ch, sfb, biter.uimsbf(4)?);
-                        }
-                    } else {
-                        for sfb in 0..6 {
-                            scale_factor_l.set(gr, ch, sfb, biter.uimsbf(4)?);
-                        }
+                    for sfb in 0..8 {
+                        scale_factor_l.set(gr, ch, sfb, biter.uimsbf(4)?);
                     }
+
                     for sfb in 3..12 {
                         for window in 0..MAX_WINDOW {
-                            if matches!(header.version, MPEGVersion::MPEG1) {
-                                scale_factor_s.set(gr, ch, sfb, window, biter.uimsbf(4)?);
-                            } else {
-                                scale_factor_s.set(gr, ch, sfb, window, biter.uimsbf(5)?);
-                            }
+                            scale_factor_s.set(gr, ch, sfb, window, biter.uimsbf(4)?);
                         }
                     }
                 } else {
                     for sfb in 0..12 {
                         for window in 0..MAX_WINDOW {
-                            if matches!(header.version, MPEGVersion::MPEG1) {
-                                scale_factor_s.set(gr, ch, sfb, window, biter.uimsbf(4)?);
-                            } else {
-                                scale_factor_s.set(gr, ch, sfb, window, biter.uimsbf(5)?);
-                            }
+                            scale_factor_s.set(gr, ch, sfb, window, biter.uimsbf(4)?);
                         }
                     }
                 }
             } else {
-                if matches!(header.version, MPEGVersion::MPEG1) {
-                    if side_info.scfsi.get(ch, 0) == 0 || gr == 0 {
-                        for sfb in 0..6 {
-                            scale_factor_l.set(gr, ch, sfb, biter.uimsbf(4)?);
-                        }
+                if side_info.scfsi.get(ch, 0) == 0 || gr == 0 {
+                    for sfb in 0..6 {
+                        scale_factor_l.set(gr, ch, sfb, biter.uimsbf(4)?);
                     }
-                    if side_info.scfsi.get(ch, 1) == 0 || gr == 0 {
-                        for sfb in 6..11 {
-                            scale_factor_l.set(gr, ch, sfb, biter.uimsbf(4)?);
-                        }
+                }
+                if side_info.scfsi.get(ch, 1) == 0 || gr == 0 {
+                    for sfb in 6..11 {
+                        scale_factor_l.set(gr, ch, sfb, biter.uimsbf(4)?);
                     }
-                    if side_info.scfsi.get(ch, 2) == 0 || gr == 0 {
-                        for sfb in 11..16 {
-                            scale_factor_l.set(gr, ch, sfb, biter.uimsbf(3)?);
-                        }
+                }
+                if side_info.scfsi.get(ch, 2) == 0 || gr == 0 {
+                    for sfb in 11..16 {
+                        scale_factor_l.set(gr, ch, sfb, biter.uimsbf(3)?);
                     }
-                    if side_info.scfsi.get(ch, 3) == 0 || gr == 0 {
-                        for sfb in 16..21 {
-                            scale_factor_l.set(gr, ch, sfb, biter.uimsbf(3)?);
-                        }
-                    }
-                } else {
-                    for sfb in 0..21 {
-                        scale_factor_l.set(gr, ch, sfb, biter.uimsbf(5)?);
+                }
+                if side_info.scfsi.get(ch, 3) == 0 || gr == 0 {
+                    for sfb in 16..21 {
+                        scale_factor_l.set(gr, ch, sfb, biter.uimsbf(3)?);
                     }
                 }
             }
