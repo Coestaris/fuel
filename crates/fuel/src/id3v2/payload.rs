@@ -17,7 +17,7 @@ pub enum ID3v2ParsePayloadError {
     StringParseError(&'static str, Vec<u8>),
 }
 
-type FFOOFO = HashMap<
+type ParsersTable = HashMap<
     &'static str,
     Box<dyn Fn(&[u8]) -> Result<ID3v2Frame, ID3v2ParsePayloadError> + Send + Sync>,
 >;
@@ -25,6 +25,7 @@ type FFOOFO = HashMap<
 macro_rules! impl_id3v2_frame {
     ( $( { $id:literal, $name:ident, ($ty:ty), $parser:ident } ),* $(,)? ) => {
         #[derive(Debug)]
+        #[allow(dead_code)]
         pub enum ID3v2Frame {
             Dummy,
             $(
@@ -34,8 +35,8 @@ macro_rules! impl_id3v2_frame {
         }
 
         lazy_static! {
-            pub static ref ID3V2_FRAME_PARSERS: FFOOFO = {
-                let mut m: FFOOFO = HashMap::new();
+            pub static ref ID3V2_FRAME_PARSERS: ParsersTable = {
+                let mut m: ParsersTable = HashMap::new();
                 $(
                     m.insert($id, Box::new(|data| {
                         let parsed = $parser(data)?;

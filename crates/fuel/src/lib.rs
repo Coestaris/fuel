@@ -1,9 +1,12 @@
 use crate::id3v2::{ID3v2Error, ID3v2Tag, parse_id3v2};
-use log::info;
+use crate::mpeg::{MpegError, parse_mpeg};
+use log::{debug, info};
 use std::path::Path;
 use thiserror::Error;
 
 mod id3v2;
+mod bite;
+mod mpeg;
 
 #[derive(Debug, Error)]
 pub enum FuelError {
@@ -11,6 +14,8 @@ pub enum FuelError {
     ReadFile(#[from] std::io::Error),
     #[error("Failed to parse ID3v2 tag: {0}")]
     ID3v2(#[from] ID3v2Error),
+    #[error("Failed to parse MPEG: {0}")]
+    MPEG(#[from] MpegError),
 }
 
 #[derive(Debug)]
@@ -22,18 +27,13 @@ pub struct AudioFile {
 
 pub fn parse_file(path: &Path) -> Result<AudioFile, FuelError> {
     info!("Reading file: {}", path.display());
-    let reader = std::fs::File::open(path)?;
-    let (tags, audio_data) = parse_id3v2(reader)?;
-
-    info!(
-        "Parsed ID3v2 tags: {:?}, audio data length: {}",
-        tags,
-        audio_data.len()
-    );
+    let mut reader = std::fs::File::open(path)?;
+    let tags = parse_id3v2(&mut reader)?;
+    let samples = parse_mpeg(&mut reader)?;
 
     Ok(AudioFile {
         tags,
         sample_rate: 44100,
-        samples: Vec::new(),
+        samples: samples,
     })
 }

@@ -29,7 +29,7 @@ pub struct ID3v2Tag {
     pub frame: ID3v2Frame,
 }
 
-pub(crate) fn parse_id3v2<R: Read + Seek>(mut stream: R) -> Result<(Vec<ID3v2Tag>, Vec<u8>), ID3v2Error> {
+pub(crate) fn parse_id3v2<R: Read + Seek>(mut stream: R) -> Result<Vec<ID3v2Tag>, ID3v2Error> {
     let mut tags = Vec::new();
 
     let header = parse_header(&mut stream)?;
@@ -49,8 +49,11 @@ pub(crate) fn parse_id3v2<R: Read + Seek>(mut stream: R) -> Result<(Vec<ID3v2Tag
         });
     }
 
-    let mut audio_data = Vec::new();
-    stream.read_to_end(&mut audio_data)?;
+    let padding = stream.stream_position()? - end_pos as u64 + size_of_val(&header) as u64;
 
-    Ok((tags, audio_data))
+    debug!("Position after reading frames: {}, padding: {}", stream.stream_position()?, padding);
+
+    stream.seek(std::io::SeekFrom::Start(end_pos as u64 + padding))?;
+
+    Ok(tags)
 }
