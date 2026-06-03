@@ -7,63 +7,140 @@ use std::io;
 use std::io::Read;
 use thiserror::Error;
 
-#[derive(Debug, Clone, Default)]
+/// MPEG Layer III block/window type for one granule/channel.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BlockType {
+    /// Normal long block. Used when `window_switching_flag == false`.
     #[default]
-    Forbidden,
+    Long,
+    /// Start block: transition from long to short windows.
     Start,
-    ShortWindows {
-        subblock_gain: [u32; 3],
-    },
+    /// Short block: three short windows per granule.
+    Short,
+    /// End block: transition from short back to long windows.
     End,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Granule {
-    block_type: BlockType,
-
-    // Determines the number of bits used for the transmission of scalefactors. A granule can be
-    // divided into 12 or 21 scalefactor bands. If long windows are used (block_type = {0,1,3})the
-    // granule will be partitioned into 21 scalefactor bands. Using short windows (block_type = 2)
-    // will partition the granule into 12 scalefactor bands. The scale factors are then further divided
-    // into two groups, 0-10, 11-20 for long windows and 0-6, 7-11 for short windows.
-    slen1: u32,
-    slen2: u32,
-
-    // States the number of bits allocated in the main data part of the frame for scalefactors (part2)
-    // and Huffman encoded data (part3). 12 bits will be used in a single channel mode whereas in
-    // stereo modes the double is needed. This field can be used to calculate the location of the next
-    // granule and the ancillary information (if used).
-    part2_3_length: u32,
-
-    // Specifies the quantization step size, this is needed in the requantization block of the decoder.
-    global_gain: u32,
-    scalefac_scale: u32,
-
-    // region 0 | region 1 | region 2 || count 1            || rzero                  ||
-    // 1                              || big values * 2     || big_values*2+count1*4  ||576
-    // The big_values field indicates the size of the big_values partition hence
-    // the maximum value is 288.
-    big_values: u32,
-    region0_count: u32,
-    region1_count: u32,
-
-    region0_table_index: u32,
-    region1_table_index: u32,
-    region2_table_index: u32,
-    count1_table_index: u32,
-
-    // This is a shortcut for additional high frequency amplification of the
-    // quantized values. If preflag[gr][ch] is set, the values of a table are added to the
-    // scalefactors (see Table 23). This is equivalent to multiplication of the requantized
-    // scalefactors with table values. If (block_type[gr][ch]==’10’) preflag[gr][ch] is never
-    // used.
-    preflag: bool,
-    mixed_block_flag: bool,
-}
-
+/// Scalefactor selection info for MPEG1 Layer III.
+/// Used only for granule 1. If a band group is shared,
+/// scalefactors are reused from granule 0 instead of being read again.
 #[derive(Debug, Clone, Default)]
 pub struct SCFSI(u8);
+
+/// Side information for one Layer III granule/channel.
+/// This does not contain decoded samples. It only describes how to read
+/// scalefactors and Huffman data from `main_data`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Granule {
+    /// Number of bits occupied by scalefactors + Huffman data
+    /// for this granule/channel in `main_data`.
+    pub part2_3_length: u16,
+
+    /// Number of Huffman value pairs in big_values region.
+    /// Covers spectral samples `0 .. big_values * 2`.
+    pub big_values: u16,
+
+    /// Base quantizer gain used during requantization.
+    pub global_gain: u8,
+
+    /// Raw scalefactor compression field from side info.
+    /// MPEG1: 4 bits, maps to `(slen1, slen2)`.
+    /// MPEG2/2.5: 9 bits, has different meaning.
+    pub scalefac_compress: u16,
+
+    /// Number of bits per scalefactor in the first scalefactor group.
+    /// Derived from `scalefac_compress` for MPEG1.
+    pub slen1: u8,
+
+    /// Number of bits per scalefactor in the second scalefactor group.
+    /// Derived from `scalefac_compress` for MPEG1.
+    pub slen2: u8,
+
+    /// Whether this granule uses switched window syntax.
+    /// If true, `block_type`, `mixed_block_flag`, two table_selects
+    /// and three subblock gains are present.
+    pub window_switching_flag: bool,
+
+    /// Long/short/start/end window mode for this granule.
+    pub block_type: BlockType,
+
+    /// Mixed block: lower bands use long windows, upper bands use short windows.
+    /// Meaningful mainly with `block_type == Short`.
+    pub mixed_block_flag: bool,
+
+    /// Huffman table indices for regions 0, 1, 2.
+    /// Normal block: all 3 are read.
+    /// Switched block: only [0] and [1] are read; [2] should stay 0.
+    pub table_select: [u8; 3],
+
+    /// Gain correction for each short window.
+    /// Present only when `window_switching_flag == true`.
+    pub subblock_gain: [u8; 3],
+
+    /// Number of scalefactor bands in region 0 minus one.
+    /// Used to split big_values into Huffman regions.
+    pub region0_count: u8,
+
+    /// Number of scalefactor bands in region 1 minus one.
+    /// Region 2 is whatever remains after region 0 and region 1.
+    pub region1_count: u8,
+
+    /// MPEG1-only high-frequency preemphasis flag.
+    /// If set, decoder adds predefined pretab values to long-block scalefactors.
+    pub preflag: bool,
+
+    /// Scalefactor step size selector.
+    ///      false: 0.5 dB steps.
+    ///      true:  1.0 dB steps.
+    pub scalefac_scale: bool,
+
+    /// Selects Huffman table A/B for count1 region.
+    ///      false: table 32.
+    ///      true:  table 33.
+    pub count1table_select: bool,
+}
+
+/// MPEG Layer III side information for one frame.
+/// This is read immediately after frame header and optional CRC.
+/// For MPEG1 Layer III:
+/// - stereo: 32 bytes
+/// - mono:   17 bytes
+#[derive(Debug, Clone, Default)]
+pub struct MPEGSideInfo {
+    /// Backpointer into bit reservoir, in bytes.
+    /// Tells how many bytes before current frame's main_data the actual
+    /// main_data for this frame begins.
+    pub main_data_begin: u16,
+
+    /// Encoder-private side info bits.
+    /// Not used by the ISO decoder pipeline.
+    pub private_bits: u8,
+
+    /// Number of channels:
+    /// 1 for SingleChannel, 2 for Stereo/JointStereo/DualChannel.
+    pub nch: usize,
+
+    /// Number of granules:
+    /// MPEG1 Layer III: 2
+    /// MPEG2/2.5 Layer III: 1
+    pub ngr: usize,
+
+    /// MPEG1 scalefactor reuse flags, one per channel.
+    /// Only meaningful for MPEG1 and granule 1.
+    pub scfsi: [SCFSI; 2],
+
+    /// Granule side info indexed as `[granule][channel]`.
+    /// Valid range:
+    /// `gr < ngr`, `ch < nch`.
+    pub granules: [[Granule; 2]; 2],
+}
+#[derive(Debug, Error)]
+pub enum MpegParseSideInfoError {
+    #[error("Failed to read from reader: {0}")]
+    IOError(#[from] io::Error),
+    #[error("Invalid block type: {0}")]
+    InvalidBlockType(u32),
+}
 
 impl SCFSI {
     fn new(value: u8) -> Self {
@@ -74,47 +151,19 @@ impl SCFSI {
         Self::new(a as u8 | (b as u8) << 1 | (c as u8) << 2 | (d as u8) << 3)
     }
 
-    fn is_shared(&self, index: usize) -> bool {
-        ((self.0 & 0b0001 == 1) && index >= 0 && index <= 5)
-            && ((self.0 & 0b0010 == 1) && index >= 6 && index <= 10)
-            && ((self.0 & 0b0100 == 1) && index >= 11 && index <= 15)
-            && ((self.0 & 0b1000 == 1) && index >= 16 && index <= 20)
+    fn is_shared_long_band(&self, sfb: usize) -> bool {
+        match sfb {
+            0..=5 => (self.0 & 0b0001) != 0,
+            6..=10 => (self.0 & 0b0010) != 0,
+            11..=15 => (self.0 & 0b0100) != 0,
+            16..=20 => (self.0 & 0b1000) != 0,
+            _ => false,
+        }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MPEGSideInfo {
-    pub main_data_begin: u32,
-
-    // Bits for private use. These bits will not be used in the future by ISO/IEC.
-    pub private_bits: u32,
-
-    // Number of channels
-    pub nch: usize,
-    // Number of granules (always 2)
-    pub ngr: usize,
-
-    // Scalefactor selection information
-    // Controls the application of scalefactors to granules. The scalefactor select information
-    // indicates whether scalefactors are transferred for granule1, or not.
-    // If short windows are used (block_type = 10) in any granule/channel, the scalefactors are
-    // always sent for each granule for that channel.
-    pub scfsi: [SCFSI; 2],
-
-    pub granule0: [Granule; 2],
-    pub granule1: [Granule; 2],
-}
-
-#[derive(Debug, Error)]
-pub enum MpegParseSideInfoError {
-    #[error("Failed to read from reader: {0}")]
-    IOError(#[from] io::Error),
-    #[error("Invalid block type: {0}")]
-    InvalidBlockType(u32),
-}
-
 lazy_static! {
-    static ref SCALEFAC_COMPRESS_TO_SLEN: HashMap<u32, (u32, u32)> = {
+    static ref SCALEFAC_COMPRESS_TO_SLEN: HashMap<u32, (u8, u8)> = {
         let mut map = HashMap::new();
 
         map.insert(0, (0, 0));
@@ -141,7 +190,12 @@ lazy_static! {
 fn parse_scfsi<R: Read, const BUF_SIZE: usize>(
     biter: &mut Biter<R, BUF_SIZE>,
 ) -> Result<SCFSI, MpegParseSideInfoError> {
-    Ok(SCFSI::new(biter.uimsbf(4)?))
+    Ok(SCFSI::new_from_bits(
+        biter.uimsbf(1)?,
+        biter.uimsbf(1)?,
+        biter.uimsbf(1)?,
+        biter.uimsbf(1)?,
+    ))
 }
 
 fn parse_granule<R: Read, const BUF_SIZE: usize>(
@@ -162,29 +216,23 @@ fn parse_granule<R: Read, const BUF_SIZE: usize>(
     if wsf == 1 {
         granule.block_type = match biter.uimsbf(2)? {
             0b01 => BlockType::Start,
-            0b10 => BlockType::ShortWindows {
-                subblock_gain: [0; 3],
-            },
+            0b10 => BlockType::Short,
             0b11 => BlockType::End,
-            bt => Err(MpegParseSideInfoError::InvalidBlockType(bt))?,
+            bt => return Err(MpegParseSideInfoError::InvalidBlockType(bt)),
         };
 
         granule.mixed_block_flag = biter.uimsbf(1)?;
-        granule.region0_table_index = biter.uimsbf(5)?;
-        granule.region1_table_index = biter.uimsbf(5)?;
-        granule.region2_table_index = biter.uimsbf(5)?;
+
+        granule.table_select[0] = biter.uimsbf(5)?;
+        granule.table_select[1] = biter.uimsbf(5)?;
+        granule.table_select[2] = 0;
 
         for window in 0..3 {
             let sbg = biter.uimsbf(3)?;
-            if let BlockType::ShortWindows { subblock_gain } = &mut granule.block_type {
-                subblock_gain[window] = sbg;
-            }
+            granule.subblock_gain[window] = sbg;
         }
 
-        if matches!(
-            granule.block_type,
-            BlockType::ShortWindows { subblock_gain: _ }
-        ) {
+        if matches!(granule.block_type, BlockType::Short { .. }) {
             let r0 = if granule.mixed_block_flag { 7 } else { 8 };
             granule.region0_count = r0;
             granule.region1_count = 20 - r0;
@@ -193,9 +241,11 @@ fn parse_granule<R: Read, const BUF_SIZE: usize>(
             granule.region1_count = 13;
         }
     } else {
-        granule.region0_table_index = biter.uimsbf(5)?;
-        granule.region1_table_index = biter.uimsbf(5)?;
-        granule.region2_table_index = biter.uimsbf(5)?;
+        granule.block_type = BlockType::Long;
+
+        granule.table_select[0] = biter.uimsbf(5)?;
+        granule.table_select[1] = biter.uimsbf(5)?;
+        granule.table_select[2] = biter.uimsbf(5)?;
 
         granule.region0_count = biter.uimsbf(4)?;
         granule.region1_count = biter.uimsbf(3)?;
@@ -203,7 +253,7 @@ fn parse_granule<R: Read, const BUF_SIZE: usize>(
 
     granule.preflag = biter.uimsbf(1)?;
     granule.scalefac_scale = biter.uimsbf(1)?;
-    granule.count1_table_index = biter.uimsbf(1)?;
+    granule.count1table_select = biter.uimsbf(1)?;
 
     Ok(granule)
 }
@@ -214,47 +264,44 @@ pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
 ) -> Result<MPEGSideInfo, MpegParseSideInfoError> {
     debug!("Parsing MPEG audio data");
 
-    // Number of channels. 1 for single_channel mode, 2 in other modes.
     let nch = match header.mode {
         MPEGMode::SingleChannel => 1,
         _ => 2,
     };
 
-    let main_data_begin: u32 = biter.uimsbf(9)?;
-    let private_bits: u32 = if nch == 1 {
+    let main_data_begin: u16 = biter.uimsbf(9)?;
+    let private_bits: u8 = if nch == 1 {
         biter.bslbf(5)?
     } else {
         biter.bslbf(3)?
     };
+
+    let scfsi = [
+        parse_scfsi(biter)?,
+        if nch == 2 {
+            parse_scfsi(biter)?
+        } else {
+            SCFSI::default()
+        },
+    ];
+
+    let mut granules = [
+        [Granule::default(), Granule::default()],
+        [Granule::default(), Granule::default()],
+    ];
+
+    for gr in 0..2 {
+        for ch in 0..nch {
+            granules[gr][ch] = parse_granule(biter)?;
+        }
+    }
 
     Ok(MPEGSideInfo {
         main_data_begin,
         private_bits,
         nch,
         ngr: 2,
-        scfsi: [
-            parse_scfsi(biter)?,
-            if nch == 2 {
-                parse_scfsi(biter)?
-            } else {
-                SCFSI::default()
-            },
-        ],
-        granule0: [
-            parse_granule(biter)?,
-            if nch == 2 {
-                parse_granule(biter)?
-            } else {
-                Default::default()
-            },
-        ],
-        granule1: [
-            parse_granule(biter)?,
-            if nch == 2 {
-                parse_granule(biter)?
-            } else {
-                Default::default()
-            },
-        ],
+        scfsi,
+        granules,
     })
 }
