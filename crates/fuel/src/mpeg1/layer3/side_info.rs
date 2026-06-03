@@ -1,10 +1,109 @@
 use crate::bite::Biter;
-use crate::header::{MPEGHeader, MPEGMode, MPEGVersion};
+use crate::header::{MPEGHeader, MPEGMode};
 use lazy_static::lazy_static;
 use log::debug;
+use std::collections::HashMap;
 use std::io;
 use std::io::Read;
 use thiserror::Error;
+
+#[derive(Debug, Clone, Default)]
+pub enum BlockType {
+    #[default]
+    Forbidden,
+    Start,
+    ShortWindows {
+        subblock_gain: [u32; 3],
+    },
+    End,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Granule {
+    block_type: BlockType,
+
+    // Determines the number of bits used for the transmission of scalefactors. A granule can be
+    // divided into 12 or 21 scalefactor bands. If long windows are used (block_type = {0,1,3})the
+    // granule will be partitioned into 21 scalefactor bands. Using short windows (block_type = 2)
+    // will partition the granule into 12 scalefactor bands. The scale factors are then further divided
+    // into two groups, 0-10, 11-20 for long windows and 0-6, 7-11 for short windows.
+    slen1: u32,
+    slen2: u32,
+
+    // States the number of bits allocated in the main data part of the frame for scalefactors (part2)
+    // and Huffman encoded data (part3). 12 bits will be used in a single channel mode whereas in
+    // stereo modes the double is needed. This field can be used to calculate the location of the next
+    // granule and the ancillary information (if used).
+    part2_3_length: u32,
+
+    // Specifies the quantization step size, this is needed in the requantization block of the decoder.
+    global_gain: u32,
+    scalefac_scale: u32,
+
+    // region 0 | region 1 | region 2 || count 1            || rzero                  ||
+    // 1                              || big values * 2     || big_values*2+count1*4  ||576
+    // The big_values field indicates the size of the big_values partition hence
+    // the maximum value is 288.
+    big_values: u32,
+    region0_count: u32,
+    region1_count: u32,
+
+    region0_table_index: u32,
+    region1_table_index: u32,
+    region2_table_index: u32,
+    count1_table_index: u32,
+
+    // This is a shortcut for additional high frequency amplification of the
+    // quantized values. If preflag[gr][ch] is set, the values of a table are added to the
+    // scalefactors (see Table 23). This is equivalent to multiplication of the requantized
+    // scalefactors with table values. If (block_type[gr][ch]==’10’) preflag[gr][ch] is never
+    // used.
+    preflag: bool,
+    mixed_block_flag: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SCFSI(u8);
+
+impl SCFSI {
+    fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    fn new_from_bits(a: bool, b: bool, c: bool, d: bool) -> Self {
+        Self::new(a as u8 | (b as u8) << 1 | (c as u8) << 2 | (d as u8) << 3)
+    }
+
+    fn is_shared(&self, index: usize) -> bool {
+        ((self.0 & 0b0001 == 1) && index >= 0 && index <= 5)
+            && ((self.0 & 0b0010 == 1) && index >= 6 && index <= 10)
+            && ((self.0 & 0b0100 == 1) && index >= 11 && index <= 15)
+            && ((self.0 & 0b1000 == 1) && index >= 16 && index <= 20)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MPEGSideInfo {
+    pub main_data_begin: u32,
+
+    // Bits for private use. These bits will not be used in the future by ISO/IEC.
+    pub private_bits: u32,
+
+    // Number of channels
+    pub nch: usize,
+    // Number of granules (always 2)
+    pub ngr: usize,
+
+    // Scalefactor selection information
+    // Controls the application of scalefactors to granules. The scalefactor select information
+    // indicates whether scalefactors are transferred for granule1, or not.
+    // If short windows are used (block_type = 10) in any granule/channel, the scalefactors are
+    // always sent for each granule for that channel.
+    pub scfsi: [SCFSI; 2],
+
+    pub granule0: [Granule; 2],
+    pub granule1: [Granule; 2],
+}
 
 #[derive(Debug, Error)]
 pub enum MpegParseSideInfoError {
@@ -14,141 +113,106 @@ pub enum MpegParseSideInfoError {
     InvalidBlockType(u32),
 }
 
-lazy_static! {}
+lazy_static! {
+    static ref SCALEFAC_COMPRESS_TO_SLEN: HashMap<u32, (u32, u32)> = {
+        let mut map = HashMap::new();
 
-#[derive(Debug, Clone)]
-pub struct MPEGSideInfo {
-    pub private_bits: u32,
+        map.insert(0, (0, 0));
+        map.insert(1, (0, 1));
+        map.insert(2, (0, 2));
+        map.insert(3, (0, 3));
+        map.insert(4, (3, 0));
+        map.insert(5, (1, 1));
+        map.insert(6, (1, 2));
+        map.insert(7, (1, 3));
+        map.insert(8, (2, 1));
+        map.insert(9, (2, 2));
+        map.insert(10, (2, 3));
+        map.insert(11, (3, 1));
+        map.insert(12, (3, 2));
+        map.insert(13, (3, 3));
+        map.insert(14, (4, 2));
+        map.insert(15, (4, 3));
 
-    pub nch: usize,
-    pub ngr: usize,
-
-    pub scfsi: SCFSI,
-
-    pub part2_3_length: PerGranuleData<u32>,
-    pub big_values: PerGranuleData<u32>,
-    pub global_gain: PerGranuleData<u32>,
-    pub scalefac_compress: PerGranuleData<u32>,
-    pub window_switching_flag: PerGranuleData<u32>,
-    pub block_type: PerGranuleData<u32>,
-    pub mixed_block_flag: PerGranuleData<u32>,
-    pub table_select: TableSelect,
-    pub subblock_gain: SubblockGain,
-    pub preflag: PerGranuleData<u32>,
-    pub region0_count: PerGranuleData<u32>,
-    pub region1_count: PerGranuleData<u32>,
-    pub scalefac_scale: PerGranuleData<u32>,
-    pub count1table_select: PerGranuleData<u32>,
+        map
+    };
 }
 
-pub const MAX_CHANNELS: usize = 2;
-pub const MAX_GRANULES: usize = 2;
-pub const MAX_SCFI_BANDS: usize = 4;
-pub const MAX_WINDOW: usize = 3;
-pub const MAX_TABLE_SELECT: usize = 3;
-
-#[derive(Debug, Clone)]
-pub struct SCFSI([u8; MAX_CHANNELS * MAX_SCFI_BANDS]);
-
-impl SCFSI {
-    pub fn new() -> Self {
-        SCFSI([0; MAX_CHANNELS * MAX_SCFI_BANDS])
-    }
-
-    pub fn set(&mut self, channel: usize, band: usize, value: u8) {
-        debug_assert!(channel < MAX_CHANNELS);
-        debug_assert!(band < MAX_SCFI_BANDS);
-        self.0[channel * MAX_SCFI_BANDS + band] = value;
-    }
-
-    pub fn get(&self, channel: usize, band: usize) -> u8 {
-        debug_assert!(channel < MAX_CHANNELS);
-        debug_assert!(band < MAX_SCFI_BANDS);
-        self.0[channel * MAX_SCFI_BANDS + band]
-    }
+fn parse_scfsi<R: Read, const BUF_SIZE: usize>(
+    biter: &mut Biter<R, BUF_SIZE>,
+) -> Result<SCFSI, MpegParseSideInfoError> {
+    Ok(SCFSI::new(biter.uimsbf(4)?))
 }
 
-#[derive(Debug, Clone)]
-pub struct PerGranuleData<T>([T; MAX_GRANULES * MAX_CHANNELS]);
+fn parse_granule<R: Read, const BUF_SIZE: usize>(
+    biter: &mut Biter<R, BUF_SIZE>,
+) -> Result<Granule, MpegParseSideInfoError> {
+    let mut granule = Granule::default();
 
-impl<T: Default + Sized + Copy> PerGranuleData<T> {
-    pub fn new() -> Self {
-        PerGranuleData([Default::default(); MAX_GRANULES * MAX_CHANNELS])
+    granule.part2_3_length = biter.uimsbf(12)?;
+    granule.big_values = biter.uimsbf(9)?;
+    granule.global_gain = biter.uimsbf(8)?;
+
+    let scalefac_compress = biter.uimsbf(4)?;
+    let slen = SCALEFAC_COMPRESS_TO_SLEN.get(&scalefac_compress).unwrap();
+    granule.slen1 = slen.0;
+    granule.slen2 = slen.1;
+
+    let wsf: u32 = biter.bslbf(1)?;
+    if wsf == 1 {
+        granule.block_type = match biter.uimsbf(2)? {
+            0b01 => BlockType::Start,
+            0b10 => BlockType::ShortWindows {
+                subblock_gain: [0; 3],
+            },
+            0b11 => BlockType::End,
+            bt => Err(MpegParseSideInfoError::InvalidBlockType(bt))?,
+        };
+
+        granule.mixed_block_flag = biter.uimsbf(1)?;
+        granule.region0_table_index = biter.uimsbf(5)?;
+        granule.region1_table_index = biter.uimsbf(5)?;
+        granule.region2_table_index = biter.uimsbf(5)?;
+
+        for window in 0..3 {
+            let sbg = biter.uimsbf(3)?;
+            if let BlockType::ShortWindows { subblock_gain } = &mut granule.block_type {
+                subblock_gain[window] = sbg;
+            }
+        }
+
+        if matches!(
+            granule.block_type,
+            BlockType::ShortWindows { subblock_gain: _ }
+        ) {
+            let r0 = if granule.mixed_block_flag { 7 } else { 8 };
+            granule.region0_count = r0;
+            granule.region1_count = 20 - r0;
+        } else {
+            granule.region0_count = 7;
+            granule.region1_count = 13;
+        }
+    } else {
+        granule.region0_table_index = biter.uimsbf(5)?;
+        granule.region1_table_index = biter.uimsbf(5)?;
+        granule.region2_table_index = biter.uimsbf(5)?;
+
+        granule.region0_count = biter.uimsbf(4)?;
+        granule.region1_count = biter.uimsbf(3)?;
     }
 
-    pub fn set(&mut self, granule: usize, channel: usize, value: T) {
-        debug_assert!(granule < MAX_GRANULES);
-        debug_assert!(channel < MAX_CHANNELS);
-        self.0[granule * MAX_CHANNELS + channel] = value;
-    }
+    granule.preflag = biter.uimsbf(1)?;
+    granule.scalefac_scale = biter.uimsbf(1)?;
+    granule.count1_table_index = biter.uimsbf(1)?;
 
-    pub fn get(&self, granule: usize, channel: usize) -> T {
-        debug_assert!(granule < MAX_GRANULES);
-        debug_assert!(channel < MAX_CHANNELS);
-        self.0[granule * MAX_CHANNELS + channel]
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TableSelect([u32; MAX_GRANULES * MAX_CHANNELS * MAX_TABLE_SELECT]);
-
-impl TableSelect {
-    pub fn new() -> Self {
-        TableSelect([0; MAX_GRANULES * MAX_CHANNELS * MAX_TABLE_SELECT])
-    }
-
-    pub fn set(&mut self, granule: usize, channel: usize, region: usize, value: u32) {
-        debug_assert!(granule < MAX_GRANULES);
-        debug_assert!(channel < MAX_CHANNELS);
-        debug_assert!(region < MAX_TABLE_SELECT);
-
-        self.0[granule * MAX_CHANNELS * MAX_TABLE_SELECT + channel * MAX_TABLE_SELECT + region] =
-            value;
-    }
-
-    pub fn get(&self, granule: usize, channel: usize, region: usize) -> u32 {
-        debug_assert!(granule < MAX_GRANULES);
-        debug_assert!(channel < MAX_CHANNELS);
-        debug_assert!(region < MAX_TABLE_SELECT);
-
-        self.0[granule * MAX_CHANNELS * MAX_TABLE_SELECT + channel * MAX_TABLE_SELECT + region]
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SubblockGain([u32; MAX_GRANULES * MAX_CHANNELS * MAX_WINDOW]);
-
-impl SubblockGain {
-    pub fn new() -> Self {
-        SubblockGain([0; MAX_GRANULES * MAX_CHANNELS * MAX_WINDOW])
-    }
-
-    pub fn set(&mut self, granule: usize, channel: usize, window: usize, value: u32) {
-        debug_assert!(granule < MAX_GRANULES);
-        debug_assert!(channel < MAX_CHANNELS);
-        debug_assert!(window < MAX_WINDOW);
-        self.0[granule * 6 + channel * 3 + window] = value;
-    }
-
-    pub fn get(&self, granule: usize, channel: usize, window: usize) -> u32 {
-        debug_assert!(granule < MAX_GRANULES);
-        debug_assert!(channel < MAX_CHANNELS);
-        debug_assert!(window < MAX_WINDOW);
-        self.0[granule * 6 + channel * 3 + window]
-    }
+    Ok(granule)
 }
 
 pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
     header: &MPEGHeader,
     biter: &mut Biter<R, BUF_SIZE>,
-) -> Result<(MPEGSideInfo, usize), MpegParseSideInfoError> {
+) -> Result<MPEGSideInfo, MpegParseSideInfoError> {
     debug!("Parsing MPEG audio data");
-
-    let main_data_begin: u32 = biter.uimsbf(9)?;
-    let private_bits: u32 = match header.mode {
-        MPEGMode::SingleChannel => biter.bslbf(5)?,
-        _ => biter.bslbf(3)?,
-    };
 
     // Number of channels. 1 for single_channel mode, 2 in other modes.
     let nch = match header.mode {
@@ -156,109 +220,41 @@ pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
         _ => 2,
     };
 
-    let mut scfsi = SCFSI::new();
-    for ch in 0..nch {
-        for scfsi_band in 0..MAX_SCFI_BANDS {
-            scfsi.set(ch, scfsi_band, biter.bslbf(1)?);
-        }
-    }
+    let main_data_begin: u32 = biter.uimsbf(9)?;
+    let private_bits: u32 = if nch == 1 {
+        biter.bslbf(5)?
+    } else {
+        biter.bslbf(3)?
+    };
 
-    // Number of granules; equals 2 for MPEG1, 1 for MPEG2 and MPEG2.5.
-    let ngr = 2;
-    let mut part2_3_length = PerGranuleData::<u32>::new();
-    let mut big_values = PerGranuleData::<u32>::new();
-    let mut global_gain = PerGranuleData::<u32>::new();
-    let mut scalefac_compress = PerGranuleData::<u32>::new();
-    let mut window_switching_flag = PerGranuleData::<u32>::new();
-    let mut block_type = PerGranuleData::<u32>::new();
-    let mut mixed_block_flag = PerGranuleData::<u32>::new();
-    let mut table_select = TableSelect::new();
-    let mut subblock_gain = SubblockGain::new();
-    let mut preflag = PerGranuleData::<u32>::new();
-    let mut region0_count = PerGranuleData::<u32>::new();
-    let mut region1_count = PerGranuleData::<u32>::new();
-    let mut scalefac_scale = PerGranuleData::<u32>::new();
-    let mut count1table_select = PerGranuleData::<u32>::new();
-
-    for gr in 0..ngr {
-        for ch in 0..nch {
-            part2_3_length.set(gr, ch, biter.uimsbf(12)?);
-            big_values.set(gr, ch, biter.uimsbf(9)?);
-            global_gain.set(gr, ch, biter.uimsbf(8)?);
-
-            scalefac_compress.set(gr, ch, biter.uimsbf(4)?);
-
-            let wsf: u32 = biter.bslbf(1)?;
-            window_switching_flag.set(gr, ch, wsf);
-            if wsf == 1 {
-                let bt = biter.uimsbf(2)?;
-                let mbf = biter.uimsbf(1)?;
-
-                block_type.set(gr, ch, bt);
-                mixed_block_flag.set(gr, ch, mbf);
-
-                if bt == 0 {
-                    return Err(MpegParseSideInfoError::InvalidBlockType(bt));
-                }
-
-                for region in 0..2 {
-                    table_select.set(gr, ch, region, biter.uimsbf(5)?);
-                }
-
-                for window in 0..3 {
-                    subblock_gain.set(gr, ch, window, biter.uimsbf(3)?);
-                }
-
-                if bt == 2 {
-                    let r0 = if mbf == 1 { 7 } else { 8 };
-                    region0_count.set(gr, ch, r0);
-                    region1_count.set(gr, ch, 20 - r0);
-                } else {
-                    region0_count.set(gr, ch, 7);
-                    region1_count.set(gr, ch, 13);
-                }
+    Ok(MPEGSideInfo {
+        main_data_begin,
+        private_bits,
+        nch,
+        ngr: 2,
+        scfsi: [
+            parse_scfsi(biter)?,
+            if nch == 2 {
+                parse_scfsi(biter)?
             } else {
-                block_type.set(gr, ch, 0);
-                mixed_block_flag.set(gr, ch, 0);
-
-                for region in 0..3 {
-                    table_select.set(gr, ch, region, biter.uimsbf(5)?);
-                }
-
-                region0_count.set(gr, ch, biter.uimsbf(4)?);
-                region1_count.set(gr, ch, biter.uimsbf(3)?);
-            }
-
-            preflag.set(gr, ch, biter.uimsbf(1)?);
-
-            scalefac_scale.set(gr, ch, biter.uimsbf(1)?);
-            count1table_select.set(gr, ch, biter.uimsbf(1)?);
-        }
-    }
-
-    debug_assert!(biter.is_aligned::<32>());
-
-    Ok((
-        MPEGSideInfo {
-            private_bits,
-            nch,
-            ngr,
-            scfsi,
-            part2_3_length,
-            big_values,
-            global_gain,
-            scalefac_compress,
-            window_switching_flag,
-            block_type,
-            mixed_block_flag,
-            table_select,
-            subblock_gain,
-            preflag,
-            region0_count,
-            region1_count,
-            scalefac_scale,
-            count1table_select,
-        },
-        main_data_begin as usize,
-    ))
+                SCFSI::default()
+            },
+        ],
+        granule0: [
+            parse_granule(biter)?,
+            if nch == 2 {
+                parse_granule(biter)?
+            } else {
+                Default::default()
+            },
+        ],
+        granule1: [
+            parse_granule(biter)?,
+            if nch == 2 {
+                parse_granule(biter)?
+            } else {
+                Default::default()
+            },
+        ],
+    })
 }
