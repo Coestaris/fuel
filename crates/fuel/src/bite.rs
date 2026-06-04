@@ -183,6 +183,18 @@ impl<R: Read, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {
         let bit_bits = u64::from(self.bit_len);
         byte_bits + bit_bits
     }
+
+    pub fn read_aligned_bytes(&mut self, out: &mut [u8]) -> io::Result<()> {
+        if !self.is_aligned::<8>() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bit reader is not byte-aligned",
+            ));
+        }
+
+        self.stream.read_exact(out)?;
+        Ok(())
+    }
 }
 
 impl<R: Read + Seek, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {

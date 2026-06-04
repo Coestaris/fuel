@@ -31,7 +31,7 @@ pub struct SCFSI(u8);
 /// This does not contain decoded samples. It only describes how to read
 /// scalefactors and Huffman data from `main_data`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct Granule {
+pub struct GranuleSideInfo {
     /// Number of bits occupied by scalefactors + Huffman data
     /// for this granule/channel in `main_data`.
     pub part2_3_length: u16,
@@ -42,11 +42,6 @@ pub struct Granule {
 
     /// Base quantizer gain used during requantization.
     pub global_gain: u8,
-
-    /// Raw scalefactor compression field from side info.
-    /// MPEG1: 4 bits, maps to `(slen1, slen2)`.
-    /// MPEG2/2.5: 9 bits, has different meaning.
-    pub scalefac_compress: u16,
 
     /// Number of bits per scalefactor in the first scalefactor group.
     /// Derived from `scalefac_compress` for MPEG1.
@@ -106,7 +101,7 @@ pub struct Granule {
 /// - stereo: 32 bytes
 /// - mono:   17 bytes
 #[derive(Debug, Clone, Default)]
-pub struct MPEGSideInfo {
+pub struct SideInfo {
     /// Backpointer into bit reservoir, in bytes.
     /// Tells how many bytes before current frame's main_data the actual
     /// main_data for this frame begins.
@@ -132,7 +127,7 @@ pub struct MPEGSideInfo {
     /// Granule side info indexed as `[granule][channel]`.
     /// Valid range:
     /// `gr < ngr`, `ch < nch`.
-    pub granules: [[Granule; 2]; 2],
+    pub granules: [[GranuleSideInfo; 2]; 2],
 }
 #[derive(Debug, Error)]
 pub enum MpegParseSideInfoError {
@@ -200,8 +195,8 @@ fn parse_scfsi<R: Read, const BUF_SIZE: usize>(
 
 fn parse_granule<R: Read, const BUF_SIZE: usize>(
     biter: &mut Biter<R, BUF_SIZE>,
-) -> Result<Granule, MpegParseSideInfoError> {
-    let mut granule = Granule::default();
+) -> Result<GranuleSideInfo, MpegParseSideInfoError> {
+    let mut granule = GranuleSideInfo::default();
 
     granule.part2_3_length = biter.uimsbf(12)?;
     granule.big_values = biter.uimsbf(9)?;
@@ -212,8 +207,8 @@ fn parse_granule<R: Read, const BUF_SIZE: usize>(
     granule.slen1 = slen.0;
     granule.slen2 = slen.1;
 
-    let wsf: u32 = biter.bslbf(1)?;
-    if wsf == 1 {
+    granule.window_switching_flag = biter.bslbf(1)?;
+    if granule.window_switching_flag {
         granule.block_type = match biter.uimsbf(2)? {
             0b01 => BlockType::Start,
             0b10 => BlockType::Short,
@@ -261,7 +256,7 @@ fn parse_granule<R: Read, const BUF_SIZE: usize>(
 pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
     header: &MPEGHeader,
     biter: &mut Biter<R, BUF_SIZE>,
-) -> Result<MPEGSideInfo, MpegParseSideInfoError> {
+) -> Result<SideInfo, MpegParseSideInfoError> {
     debug!("Parsing MPEG audio data");
 
     let nch = match header.mode {
@@ -286,8 +281,8 @@ pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
     ];
 
     let mut granules = [
-        [Granule::default(), Granule::default()],
-        [Granule::default(), Granule::default()],
+        [GranuleSideInfo::default(), GranuleSideInfo::default()],
+        [GranuleSideInfo::default(), GranuleSideInfo::default()],
     ];
 
     for gr in 0..2 {
@@ -296,7 +291,7 @@ pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
         }
     }
 
-    Ok(MPEGSideInfo {
+    Ok(SideInfo {
         main_data_begin,
         private_bits,
         nch,
