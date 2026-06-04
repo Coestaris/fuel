@@ -1,5 +1,5 @@
 use std::io::{self, Read};
-use crate::bite::Biter;
+use crate::bite::{Biter, BiterError};
 
 const RESERVOIR_BACKPTR_MAX: usize = 511;
 
@@ -7,8 +7,8 @@ const RESERVOIR_CAP: usize = 2048;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReservoirError {
-    #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
+    #[error("Failed to read from input stream: {0}")]
+    BiterError(#[from] BiterError),
     #[error("main_data_begin is too large: {main_data_begin}, available: {available}")]
     Underflow {
         main_data_begin: usize,

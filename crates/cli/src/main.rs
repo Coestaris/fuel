@@ -4,7 +4,7 @@ use fern::colors::{Color, ColoredLevelConfig};
 use std::time::SystemTime;
 use colored::Colorize;
 use log::info;
-use fuel::parse_file;
+use fuel::decode_file;
 
 fn setup_logger() -> Result<(), fern::InitError> {
     let colors = ColoredLevelConfig::new()
@@ -42,8 +42,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Arguments::parse();
     info!("Processing file: {}", args.file.display());
 
-    let file = parse_file(&args.file)?;
-    info!("Successfully parsed file: {:?}", file);
+    let file = decode_file(&args.file)?;
+    info!("Successfully decoded file");
 
     Ok(())
 }

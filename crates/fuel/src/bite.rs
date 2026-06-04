@@ -1,7 +1,22 @@
 use std::io;
-use std::io::{ErrorKind, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
+use thiserror::Error;
 
 pub(crate) const DEFAULT_BUF_SIZE: usize = 1024;
+
+#[derive(Debug, Error)]
+pub enum BiterError {
+    #[error("IO error: {0}")]
+    IO(#[from] io::Error),
+    #[error("Unexpected end of file")]
+    EOF,
+    #[error("Unaligned buffer")]
+    Unaligned,
+    #[error("Cannot read more than {0} at once, got: {1}")]
+    TooManyBitsToRead(usize, usize),
+    #[error("Output buffer is too small: {0} < {1}")]
+    SmallInputBuffer(usize, usize),
+}
 
 pub struct Biter<R, const BUF_SIZE: usize = DEFAULT_BUF_SIZE> {
     stream: R,
@@ -48,16 +63,13 @@ impl<R: Read, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {
     }
 
     #[inline(always)]
-    fn next_byte(&mut self) -> io::Result<u8> {
+    fn next_byte(&mut self) -> Result<u8, BiterError> {
         if self.byte_pos == self.byte_len {
             self.byte_len = self.stream.read(&mut self.byte_buf)?;
             self.byte_pos = 0;
 
             if self.byte_len == 0 {
-                return Err(io::Error::new(
-                    ErrorKind::UnexpectedEof,
-                    "unexpected EOF while reading bitstream",
-                ));
+                Err(BiterError::EOF)?
             }
         }
 
@@ -67,7 +79,7 @@ impl<R: Read, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {
     }
 
     #[inline(always)]
-    fn ensure_bits(&mut self, bits: usize) -> io::Result<()> {
+    fn ensure_bits(&mut self, bits: usize) -> Result<(), BiterError> {
         debug_assert!(bits <= 32);
 
         while usize::from(self.bit_len) < bits {
@@ -81,12 +93,9 @@ impl<R: Read, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {
     }
 
     #[inline(always)]
-    pub fn read_bits_u32(&mut self, bits: usize) -> io::Result<u32> {
+    pub fn read_bits_u32(&mut self, bits: usize) -> Result<u32, BiterError> {
         if bits > 32 {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "cannot read more than 32 bits into u32",
-            ));
+            Err(BiterError::TooManyBitsToRead(bits, 32))?
         }
 
         if bits == 0 {
@@ -132,7 +141,7 @@ impl<R: Read, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {
     ///
     /// For raw bits `1000_0111`, this returns raw value `0x87`.
     #[inline(always)]
-    pub fn bslbf<T: FromBSLBF>(&mut self, bits: usize) -> io::Result<T> {
+    pub fn bslbf<T: FromBSLBF>(&mut self, bits: usize) -> Result<T, BiterError> {
         let raw = self.read_bits_u32(bits)?;
         Ok(T::from_bits(raw))
     }
@@ -141,7 +150,7 @@ impl<R: Read, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {
     ///
     /// For raw bits `1000_0111`, this returns numeric value `135`.
     #[inline(always)]
-    pub fn uimsbf<T: FromUIMSBF>(&mut self, bits: usize) -> io::Result<T> {
+    pub fn uimsbf<T: FromUIMSBF>(&mut self, bits: usize) -> Result<T, BiterError> {
         let raw = self.read_bits_u32(bits)?;
         Ok(T::from_bits(raw))
     }
@@ -184,15 +193,45 @@ impl<R: Read, const BUF_SIZE: usize> Biter<R, BUF_SIZE> {
         byte_bits + bit_bits
     }
 
-    pub fn read_aligned_bytes(&mut self, out: &mut [u8]) -> io::Result<()> {
-        if !self.is_aligned::<8>() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "bit reader is not byte-aligned",
-            ));
+    fn iterate_bits<F>(&mut self, mut bits: usize, mut f: F) -> Result<(), BiterError>
+    where
+        F: FnMut(u8),
+    {
+        while bits > 0 {
+            let n = bits.min(8);
+            f(self.uimsbf(n)?);
+            bits -= n;
         }
 
-        self.stream.read_exact(out)?;
+        Ok(())
+    }
+
+    pub fn skip_bits(&mut self, bits: usize) -> Result<(), BiterError> {
+        self.iterate_bits(bits, |_| {})
+    }
+
+    pub fn read_bits(&mut self, bits: usize, out: &mut [u8]) -> Result<(), BiterError> {
+        let req = bits.div_ceil(8);
+        if out.len() < req {
+            Err(BiterError::SmallInputBuffer(req, out.len()))?
+        }
+
+        let mut idx = 0;
+        self.iterate_bits(bits, |byte| {
+            out[idx] = byte;
+            idx += 1;
+        })
+    }
+
+    pub fn read_aligned_bytes(&mut self, out: &mut [u8]) -> Result<(), BiterError> {
+        if !self.is_aligned::<8>() {
+            Err(BiterError::Unaligned)?
+        }
+
+        for byte in out {
+            *byte = self.uimsbf(8)?;
+        }
+
         Ok(())
     }
 }

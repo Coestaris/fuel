@@ -1,4 +1,4 @@
-use crate::bite::Biter;
+use crate::bite::{Biter, BiterError};
 use crate::header::{MPEGHeader, MPEGMode};
 use lazy_static::lazy_static;
 use log::debug;
@@ -130,9 +130,9 @@ pub struct SideInfo {
     pub granules: [[GranuleSideInfo; 2]; 2],
 }
 #[derive(Debug, Error)]
-pub enum MpegParseSideInfoError {
-    #[error("Failed to read from reader: {0}")]
-    IOError(#[from] io::Error),
+pub enum DecodeSideInfoError {
+    #[error("Failed to read from input stream: {0}")]
+    BiterError(#[from] BiterError),
     #[error("Invalid block type: {0}")]
     InvalidBlockType(u32),
 }
@@ -146,7 +146,7 @@ impl SCFSI {
         Self::new(a as u8 | (b as u8) << 1 | (c as u8) << 2 | (d as u8) << 3)
     }
 
-    fn is_shared_long_band(&self, sfb: usize) -> bool {
+    pub fn is_shared_long_band(&self, sfb: usize) -> bool {
         match sfb {
             0..=5 => (self.0 & 0b0001) != 0,
             6..=10 => (self.0 & 0b0010) != 0,
@@ -182,9 +182,9 @@ lazy_static! {
     };
 }
 
-fn parse_scfsi<R: Read, const BUF_SIZE: usize>(
+fn decode_scfsi<R: Read, const BUF_SIZE: usize>(
     biter: &mut Biter<R, BUF_SIZE>,
-) -> Result<SCFSI, MpegParseSideInfoError> {
+) -> Result<SCFSI, DecodeSideInfoError> {
     Ok(SCFSI::new_from_bits(
         biter.uimsbf(1)?,
         biter.uimsbf(1)?,
@@ -193,9 +193,9 @@ fn parse_scfsi<R: Read, const BUF_SIZE: usize>(
     ))
 }
 
-fn parse_granule<R: Read, const BUF_SIZE: usize>(
+fn decode_granule<R: Read, const BUF_SIZE: usize>(
     biter: &mut Biter<R, BUF_SIZE>,
-) -> Result<GranuleSideInfo, MpegParseSideInfoError> {
+) -> Result<GranuleSideInfo, DecodeSideInfoError> {
     let mut granule = GranuleSideInfo::default();
 
     granule.part2_3_length = biter.uimsbf(12)?;
@@ -213,7 +213,7 @@ fn parse_granule<R: Read, const BUF_SIZE: usize>(
             0b01 => BlockType::Start,
             0b10 => BlockType::Short,
             0b11 => BlockType::End,
-            bt => return Err(MpegParseSideInfoError::InvalidBlockType(bt)),
+            bt => return Err(DecodeSideInfoError::InvalidBlockType(bt)),
         };
 
         granule.mixed_block_flag = biter.uimsbf(1)?;
@@ -253,10 +253,10 @@ fn parse_granule<R: Read, const BUF_SIZE: usize>(
     Ok(granule)
 }
 
-pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
+pub(crate) fn decode_side_info<R: Read, const BUF_SIZE: usize>(
     header: &MPEGHeader,
     biter: &mut Biter<R, BUF_SIZE>,
-) -> Result<SideInfo, MpegParseSideInfoError> {
+) -> Result<SideInfo, DecodeSideInfoError> {
     debug!("Parsing MPEG audio data");
 
     let nch = match header.mode {
@@ -272,22 +272,19 @@ pub(crate) fn parse_side_info<R: Read, const BUF_SIZE: usize>(
     };
 
     let scfsi = [
-        parse_scfsi(biter)?,
+        decode_scfsi(biter)?,
         if nch == 2 {
-            parse_scfsi(biter)?
+            decode_scfsi(biter)?
         } else {
             SCFSI::default()
         },
     ];
 
-    let mut granules = [
-        [GranuleSideInfo::default(), GranuleSideInfo::default()],
-        [GranuleSideInfo::default(), GranuleSideInfo::default()],
-    ];
+    let mut granules = [[GranuleSideInfo::default(); 2]; 2];
 
     for gr in 0..2 {
         for ch in 0..nch {
-            granules[gr][ch] = parse_granule(biter)?;
+            granules[gr][ch] = decode_granule(biter)?;
         }
     }
 

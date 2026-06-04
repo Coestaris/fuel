@@ -1,16 +1,16 @@
-use crate::bite::Biter;
+use crate::bite::{Biter, BiterError};
 use lazy_static::lazy_static;
+use log::debug;
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
 use std::io;
-use std::io::{Read, Seek};
-use log::debug;
+use std::io::Read;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum MpegParseHeaderError {
-    #[error("Failed to read from reader: {0}")]
-    IOError(#[from] io::Error),
+    #[error("Failed to read from input stream: {0}")]
+    BiterError(#[from] BiterError),
     #[error("Failed to parse header: {0}")]
     InvalidSyncWord(u32),
     #[error("Unsupported MPEG version combination. ID={0}, IDex={1}")]
@@ -262,17 +262,13 @@ pub(crate) fn parse_header<R: Read, const BUF_SIZE: usize>(
         sampling_frequency: *SAMPLING_FREQUNCY_TABLE
             .get(&(idex, id, sampling_frequency))
             .ok_or_else(|| {
-                MpegParseHeaderError::UnsupportedSamplingFrequency(
-                    id,
-                    idex,
-                    sampling_frequency,
-                )
+                MpegParseHeaderError::UnsupportedSamplingFrequency(id, idex, sampling_frequency)
             })?,
         padding_bit,
         private_bit,
-        mode: *MODE_TALBE.get(&(mode, mode_extension)).ok_or_else(|| {
-            MpegParseHeaderError::UnsupportedMPEGVersion(mode, mode_extension)
-        })?,
+        mode: *MODE_TALBE
+            .get(&(mode, mode_extension))
+            .ok_or_else(|| MpegParseHeaderError::UnsupportedMPEGVersion(mode, mode_extension))?,
         is_original: original_copy,
         is_copyright: copyright,
         emphasis: *EMPHASIS_TABLE

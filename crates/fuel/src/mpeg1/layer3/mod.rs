@@ -1,9 +1,11 @@
 use crate::bite::{Biter, DEFAULT_BUF_SIZE};
 use crate::header::{MPEGBitrate, MPEGHeader, MPEGMode};
-use crate::mpeg1::layer3::main_data::{MainData, MpegParseMainDataError, parse_main_data};
+use crate::mpeg1::layer3::main_data::{DecodeMainDataError, MainData, decode_main_data};
 use crate::mpeg1::layer3::reservoir::{Reservoir, ReservoirError};
-use crate::mpeg1::layer3::side_info::{MpegParseSideInfoError, SideInfo, parse_side_info};
+use crate::mpeg1::layer3::side_info::{DecodeSideInfoError, SideInfo, decode_side_info};
+use crate::{Audio, Decoder, Frame, FuelError};
 use log::debug;
+use std::error::Error;
 use std::io::{Cursor, Read};
 use thiserror::Error;
 
@@ -12,9 +14,12 @@ mod reservoir;
 mod side_info;
 
 #[derive(Debug, Error)]
-pub enum MPEG1Layer3ParseError {
+pub enum MPEG1Layer3DecoderNewError {}
+
+#[derive(Debug, Error)]
+pub enum MPEG1Layer3DecodeError {
     #[error(transparent)]
-    SideInfo(#[from] MpegParseSideInfoError),
+    SideInfo(#[from] DecodeSideInfoError),
     #[error("Unsupported free bitrate")]
     UnsupportedFreeBitrate,
     #[error("Invalid frame size")]
@@ -22,7 +27,7 @@ pub enum MPEG1Layer3ParseError {
     #[error(transparent)]
     Reservoir(#[from] ReservoirError),
     #[error(transparent)]
-    MainData(#[from] MpegParseMainDataError),
+    MainData(#[from] DecodeMainDataError),
 }
 
 fn side_info_size_bytes(header: &MPEGHeader) -> usize {
@@ -32,10 +37,10 @@ fn side_info_size_bytes(header: &MPEGHeader) -> usize {
     }
 }
 
-fn frame_size_bytes(header: &MPEGHeader) -> Result<usize, MPEG1Layer3ParseError> {
+fn frame_size_bytes(header: &MPEGHeader) -> Result<usize, MPEG1Layer3DecodeError> {
     let bitrate_kbps = match header.bitrate {
         MPEGBitrate::Fixed(kbps) => kbps as usize,
-        MPEGBitrate::Free => return Err(MPEG1Layer3ParseError::UnsupportedFreeBitrate),
+        MPEGBitrate::Free => return Err(MPEG1Layer3DecodeError::UnsupportedFreeBitrate),
     };
 
     let padding = if header.padding_bit { 1 } else { 0 };
@@ -43,13 +48,13 @@ fn frame_size_bytes(header: &MPEGHeader) -> Result<usize, MPEG1Layer3ParseError>
     Ok((144_000 * bitrate_kbps) / header.sampling_frequency as usize + padding)
 }
 
-fn parse_frame<R: Read, const BUF_SIZE: usize>(
+fn decode_frame<R: Read, const BUF_SIZE: usize>(
     header: &MPEGHeader,
     mut biter: &mut Biter<R, BUF_SIZE>,
     reservoir: &mut Reservoir,
-) -> Result<(SideInfo, MainData), MPEG1Layer3ParseError> {
+) -> Result<(SideInfo, MainData), MPEG1Layer3DecodeError> {
     debug!("after header bit pos = {}", biter.bits_read());
-    let side_info = parse_side_info(&header, &mut biter)?;
+    let side_info = decode_side_info(&header, &mut biter)?;
     debug!("after side info bit pos = {}", biter.bits_read());
 
     debug_assert!(biter.is_aligned::<8>());
@@ -59,7 +64,7 @@ fn parse_frame<R: Read, const BUF_SIZE: usize>(
     let side_info_size = side_info_size_bytes(header);
     let main_data_bytes = frame_size
         .checked_sub(4 + crc_size + side_info_size)
-        .ok_or(MPEG1Layer3ParseError::InvalidFrameSize)?;
+        .ok_or(MPEG1Layer3DecodeError::InvalidFrameSize)?;
 
     let main_data_bytes =
         reservoir.bite_and_view(side_info.main_data_begin as usize, main_data_bytes, biter)?;
@@ -69,18 +74,53 @@ fn parse_frame<R: Read, const BUF_SIZE: usize>(
 
     debug!("after main data pos = {}", biter.bits_read());
 
-    let main_data = parse_main_data(header, &side_info, &mut main_data_biter)?;
+    let main_data = decode_main_data(
+        header,
+        &side_info,
+        &mut main_data_biter,
+        main_data_bytes.len() * 8,
+    )?;
 
     Ok((side_info, main_data))
 }
 
-pub(crate) fn parse_mpeg1_layer3<R: Read, const BUF_SIZE: usize>(
-    header: &MPEGHeader,
-    mut biter: &mut Biter<R, BUF_SIZE>,
-) -> Result<Vec<f32>, MPEG1Layer3ParseError> {
-    let mut reservoir = Reservoir::new();
-    let (side_info, main_data) = parse_frame::<R, BUF_SIZE>(header, &mut biter, &mut reservoir)?;
-    debug!("Side info = {:#?}", side_info);
-    debug!("main_data = {:#?}", main_data);
-    Ok(vec![])
+struct Mpeg1Layer3Decoder {
+    reservoir: Reservoir,
+}
+
+impl Mpeg1Layer3Decoder {
+    fn new() -> Self {
+        Mpeg1Layer3Decoder {
+            reservoir: Reservoir::new(),
+        }
+    }
+}
+
+impl<R: Read, const BUF_SIZE: usize> Decoder<R, BUF_SIZE> for Mpeg1Layer3Decoder {
+    fn decode_samples(
+        &mut self,
+        header: &MPEGHeader,
+        biter: &mut Biter<R, BUF_SIZE>,
+    ) -> Result<Frame, Box<dyn Error>>
+    where
+        Self: Sized,
+    {
+        let (side_info, main_data) =
+            decode_frame::<R, BUF_SIZE>(header, biter, &mut self.reservoir)?;
+
+        debug!("Side info = {:?}", side_info);
+        debug!("main_data = {:?}", main_data);
+
+        Ok(Frame {
+            sample_rate: header.sampling_frequency,
+            samples: [0.0; 511],
+            used: 0,
+        })
+    }
+}
+
+pub(crate) fn mpeg1_layer3_decoder_new<R: Read, const BUF_SIZE: usize>(
+    _: &MPEGHeader,
+) -> Result<Box<dyn Decoder<R, BUF_SIZE>>, MPEG1Layer3DecoderNewError> {
+    Ok(Box::new(Mpeg1Layer3Decoder::new()))
 }

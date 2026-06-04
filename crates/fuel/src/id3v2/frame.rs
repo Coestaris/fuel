@@ -1,6 +1,5 @@
 use crate::id3v2::types::{ID3v2FrameFlags, ID3v2FrameHeader, ID3v2FrameID};
 use bitflags::Flags;
-use log::error;
 use std::io::Read;
 use thiserror::Error;
 

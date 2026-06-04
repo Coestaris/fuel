@@ -1,26 +1,25 @@
-use crate::bite::Biter;
-use crate::header::{MPEGHeader, MPEGLayer};
-use crate::mpeg1::layer3::{MPEG1Layer3ParseError, parse_mpeg1_layer3};
 use std::io::Read;
+use crate::Decoder;
+use crate::header::{MPEGHeader, MPEGLayer};
+use crate::mpeg1::layer3::{MPEG1Layer3DecoderNewError, mpeg1_layer3_decoder_new};
 use thiserror::Error;
 
 pub mod layer3;
 
 #[derive(Debug, Error)]
-pub enum MPEG1ParseError {
+pub enum MPEG1DecoderNewError {
     #[error("Unsupported layer: {0}")]
     UnsupportedLayer(MPEGLayer),
-    #[error(transparent)]
-    Layer3Failed(#[from] MPEG1Layer3ParseError),
+    #[error("Failed to create MPEG1 LayerIII decoder: {0}")]
+    FailedToCreateMPEG1Layer3Decoder(#[from] MPEG1Layer3DecoderNewError),
 }
 
-pub(crate) fn parse_mpeg1<R: Read, const BUF_SIZE: usize>(
+pub(crate) fn mpeg1_decoder_new<R: Read, const BUF_SIZE: usize>(
     header: &MPEGHeader,
-    biter: &mut Biter<R, BUF_SIZE>,
-) -> Result<Vec<f32>, MPEG1ParseError> {
+) -> Result<Box<dyn Decoder<R, BUF_SIZE>>, MPEG1DecoderNewError> {
     Ok(match header.layer {
-        MPEGLayer::LayerI => Err(MPEG1ParseError::UnsupportedLayer(header.layer))?,
-        MPEGLayer::LayerII => Err(MPEG1ParseError::UnsupportedLayer(header.layer))?,
-        MPEGLayer::LayerIII => parse_mpeg1_layer3(header, biter)?,
+        MPEGLayer::LayerI => Err(MPEG1DecoderNewError::UnsupportedLayer(header.layer))?,
+        MPEGLayer::LayerII => Err(MPEG1DecoderNewError::UnsupportedLayer(header.layer))?,
+        MPEGLayer::LayerIII => mpeg1_layer3_decoder_new::<R, BUF_SIZE>(header)?,
     })
 }
