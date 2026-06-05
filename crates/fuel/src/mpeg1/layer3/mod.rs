@@ -12,6 +12,7 @@ use thiserror::Error;
 mod main_data;
 mod reservoir;
 mod side_info;
+mod huffman;
 
 #[derive(Debug, Error)]
 pub enum MPEG1Layer3DecoderNewError {}
